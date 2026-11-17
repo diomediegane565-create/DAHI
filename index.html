@@ -1133,12 +1133,35 @@ async function submitInscription(e){
     return false;
   }
   STATE.memberCount = (STATE.memberCount || 0) + 1;
-  notify({type:'welcome', to: member.email, prenom: member.prenom});
+  notify({type:'welcome', to: member.email, prenom: member.prenom, nom: member.nom, matricule: member.matricule});
   showAdhesionStep(member);
   return false;
 }
-// Envoi d'e-mails : non branché pour l'instant (nécessite un service d'envoi côté serveur).
-function notify(payload){ /* rien */ }
+/* ---- E-mail de bienvenue (service EmailJS, appelé depuis le navigateur) ----
+   À renseigner une seule fois (voir README) ; tant que c'est vide, aucun e-mail n'est envoyé. */
+const EMAILJS = { serviceId:'', templateId:'', publicKey:'' };
+async function notify(payload){
+  try{
+    if(payload.type !== 'welcome' || !payload.to) return;
+    if(!EMAILJS.serviceId || !EMAILJS.templateId || !EMAILJS.publicKey) return;
+    await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({
+        service_id: EMAILJS.serviceId,
+        template_id: EMAILJS.templateId,
+        user_id: EMAILJS.publicKey,
+        template_params: {
+          to_email: payload.to,
+          prenom: payload.prenom || '',
+          nom: payload.nom || '',
+          matricule: payload.matricule || '',
+          site_url: location.origin + location.pathname
+        }
+      })
+    });
+  }catch(e){ console.warn('e-mail de bienvenue non envoyé', e); } // ne bloque jamais l'inscription
+}
 function showAdhesionStep(member){
   document.getElementById('stepDot1').classList.remove('active');
   document.getElementById('stepDot1').classList.add('done');
@@ -1948,6 +1971,7 @@ function renderAdmin(){
               ${STATE.commissions.map((c,ci)=>`<option value="${ci}" ${m.isAdmin && m.adminScope==String(ci) ? 'selected':''}>Admin — ${c.name}</option>`).join('')}
             </select>
             <button class="small-btn" onclick="printSingleCard(${i})">${ic('arrow',13)} Carte</button>
+            <button class="small-btn danger" onclick="deleteMember(${i})">Supprimer</button>
           </div>
           <div style="flex-basis:100%; display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
             <select onchange="updateMemberField(${i},'commission',this.value)" style="font-size:0.75rem; padding:6px 8px; border-radius:6px; border:1px solid var(--line-strong); width:auto;">
@@ -2270,6 +2294,26 @@ function logoutAdmin(){
 async function toggleMemberPaid(i){
   STATE.members[i].adhesionPayee = !STATE.members[i].adhesionPayee;
   await sset('members', STATE.members, true);
+  renderAdmin();
+}
+async function deleteMember(i){
+  const target = STATE.members[i];
+  if(!target) return;
+  const nomComplet = `${target.prenom} ${target.nom}`.trim();
+  if(!confirm(`Supprimer définitivement ${nomComplet} (${getMatricule(target,i)}) ?\n\nSa fiche et sa photo seront effacées. Cette action est irréversible.`)) return;
+  // On relit la liste à jour (d'autres personnes ont pu s'inscrire entre-temps)
+  // et on fige les matricules avant de retirer quelqu'un : sans cela, les matricules
+  // « calculés » d'après la position changeraient pour les membres suivants.
+  const fresh = await sget('members');
+  if(!Array.isArray(fresh)){ alert("Impossible de lire la liste des membres. Réessayez dans un instant."); return; }
+  const frozen = fresh.map((x,idx)=> x.matricule ? x : {...x, matricule:getMatricule(x,idx)});
+  const mat = getMatricule(target, i);
+  const updated = frozen.filter(x => x.matricule !== mat);
+  if(updated.length === frozen.length){ alert("Ce membre n'existe plus dans la liste."); STATE.members = frozen; renderAdmin(); return; }
+  const ok = await sset('members', updated);
+  if(!ok){ alert("La suppression a échoué (connexion ou droits). Rien n'a été modifié."); return; }
+  if(target.hasPhoto) await sdelete('memberPhoto_' + mat);
+  STATE.members = updated;
   renderAdmin();
 }
 async function updateMemberField(i, field, value){
