@@ -484,7 +484,7 @@
     <a href="#" class="dlink" data-view="kourel"><svg class="icon dicon" viewBox="0 0 24 24"><circle cx="7" cy="18" r="2.6"/><circle cx="17" cy="16" r="2.6"/><path d="M9.6 18V6.5L19.6 4v11.5"/><path d="M9.6 9.5l10-2.5"/></svg> Sons du Kourel</a>
     <a href="#" class="dlink" data-view="agenda"><svg class="icon dicon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg> Programmes & Événements</a>
     <div class="drawer-group-label">Communauté</div>
-    <a href="#" class="dlink" data-view="inscription"><svg class="icon dicon" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M18 8v6M15 11h6"/></svg> Devenir membre & adhésion</a>
+    <a href="#" class="dlink" data-view="inscription"><svg class="icon dicon" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M18 8v6M15 11h6"/></svg> Mon adhésion</a>
     <a href="#" class="dlink" data-view="commissions"><svg class="icon dicon" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg> Commissions du bureau</a>
     <a href="#" class="dlink" data-view="espace-commission"><svg class="icon dicon" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M9 15h6"/></svg> Espace de ma commission</a>
     <a href="#" class="dlink" data-view="annonces"><svg class="icon dicon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg> Annonces</a>
@@ -495,6 +495,8 @@
     <div class="drawer-group-label">Administration</div>
     <button class="dlink" data-view="admin"><svg class="icon dicon" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> Espace administrateur</button>
   </div>
+  <div class="drawer-group-label">Mon compte</div>
+  <button class="dlink" onclick="logoutMember()">Se déconnecter</button>
   <div class="drawer-foot">Dahira Khidmatul Khayril Hallamina Ahmada &copy; 2026</div>
 </nav>
 
@@ -541,7 +543,7 @@
     <div>
       <h5>Communauté</h5>
       <div class="flinks">
-        <button onclick="dgoto('inscription')">Devenir membre & adhésion</button>
+        <button onclick="dgoto('inscription')">Mon adhésion</button>
         <button onclick="dgoto('barkelou')">Barkelou (dons)</button>
         <button onclick="dgoto('annonces')">Annonces</button>
       </div>
@@ -607,7 +609,7 @@ function setupReveal(){
 // l'administrateur, espaces privés réservés aux commissions munies de leur code.
 const SUPABASE_URL = 'https://ettdvzffxfjtdjxfuyka.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_-r45l6q_m1otUswnsiQjuA_afI4D4Kc';
-const AUTH = { admin: null, cidx: null, ccode: null };
+const AUTH = { admin: null, cidx: null, ccode: null, token: null };
 let READ_FAILED = false;
 
 async function rpc(fn, args){
@@ -620,7 +622,11 @@ async function rpc(fn, args){
       body: JSON.stringify(args || {}),
       signal: ctrl.signal
     });
-    if(!res.ok) throw new Error('HTTP ' + res.status);
+    if(!res.ok){
+      let msg = 'HTTP ' + res.status;
+      try{ const b = await res.json(); if(b && b.message) msg = b.message; }catch(e){}
+      throw new Error(msg);
+    }
     return await res.json();
   } finally { clearTimeout(timer); }
 }
@@ -628,7 +634,7 @@ function authArgs(){ return { p_admin: AUTH.admin, p_cidx: AUTH.cidx, p_ccode: A
 
 async function sget(key){
   try{
-    const v = await rpc('kv_get', { p_key: key, ...authArgs() });
+    const v = await rpc('kv_get', { p_key: key, ...authArgs(), p_token: AUTH.token });
     return v === undefined ? null : v;
   }catch(e){ READ_FAILED = true; return null; }
 }
@@ -757,8 +763,8 @@ function openDrawer(){ document.getElementById('drawer').classList.add('open'); 
 function closeDrawer(){ document.getElementById('drawer').classList.remove('open'); document.getElementById('overlay').classList.remove('open'); }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  await loadState();
   document.querySelectorAll('.dlink').forEach(el=>{
+    if(!el.dataset.view) return;
     el.addEventListener('click', (e)=>{
       e.preventDefault();
       document.querySelectorAll('.dlink').forEach(x=>x.classList.remove('active'));
@@ -767,10 +773,213 @@ document.addEventListener('DOMContentLoaded', async () => {
       closeDrawer();
     });
   });
+  if(await bootAuth()) await startApp();
+});
+async function startApp(){
+  const ok = await loadState();
   goto('home');
   renderFooterSocial();
   handleDeepLink();
-});
+  return ok;
+}
+
+/* ============ COMPTES MEMBRES : porte d'entrée ============ */
+// Il faut un compte (e-mail + mot de passe) pour accéder à la plateforme. Le contrôle est fait
+// côté serveur : sans jeton de session valide, le serveur ne renvoie aucun contenu du site.
+let ME = null;
+const TOKEN_KEY = 'dahira_token';
+function readToken(){ try{ return localStorage.getItem(TOKEN_KEY); }catch(e){ return null; } }
+function storeToken(t){ try{ if(t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); }catch(e){} }
+
+async function bootAuth(){
+  const t = readToken();
+  if(t){
+    try{
+      const me = await rpc('member_me', { p_token: t });
+      if(me){ AUTH.token = t; ME = me; return true; }
+      storeToken(null); // jeton expiré ou compte supprimé
+    }catch(e){ /* serveur injoignable : on garde le jeton et on affiche la porte */ }
+  }
+  // QR code des cartes administrateur : accès direct sans compte membre
+  const m = location.hash.match(/^#admin&pass=(.+)$/);
+  if(m){
+    try{
+      const pass = decodeURIComponent(m[1]);
+      if(await rpc('admin_login', { p_pass: pass })){ AUTH.admin = pass; return true; }
+    }catch(e){}
+  }
+  showGate('login');
+  return false;
+}
+function gateError(err){
+  const m = String((err && err.message) || '');
+  if(m.includes('EMAIL_EXISTS')) return "Cet e-mail a déjà un compte. Utilisez l'onglet « Se connecter ».";
+  if(m.includes('WEAK_PASSWORD')) return "Mot de passe trop court (6 caractères minimum).";
+  if(m.includes('EMAIL_REQUIRED')) return "Veuillez saisir une adresse e-mail valide.";
+  if(m.includes('CLAIM_FAILED')) return "Aucune fiche ne correspond à ce matricule et ce téléphone, ou le compte est déjà activé.";
+  return "Le serveur est injoignable ou a refusé la demande. Réessayez dans un instant.";
+}
+function gateMsg(text, ok){
+  const el = document.getElementById('gateMsg'); if(!el) return;
+  el.className = 'form-msg ' + (ok ? 'ok' : 'err'); el.textContent = text; el.style.display = 'block';
+}
+function showGate(tab){
+  let g = document.getElementById('gate');
+  if(!g){ g = document.createElement('div'); g.id = 'gate'; document.body.appendChild(g); }
+  document.body.style.overflow = 'hidden';
+  const logo = document.querySelector('.brand img').src;
+  const tabBtn = (id,label)=>`<button type="button" class="small-btn" style="${tab===id?'background:var(--green-deep);color:#fff;':''}" onclick="showGate('${id}')">${label}</button>`;
+  const pw = `<label>Mot de passe (6 caractères minimum)</label><input type="password" id="g_pass" autocomplete="new-password" required>
+              <label>Confirmer le mot de passe</label><input type="password" id="g_pass2" autocomplete="new-password" required>`;
+  let body = '';
+  if(tab === 'login'){
+    body = `<form onsubmit="return gateLogin(event)">
+      <label style="margin-top:0;">E-mail</label><input type="email" id="g_email" autocomplete="username" required>
+      <label>Mot de passe</label><input type="password" id="g_pass" autocomplete="current-password" required>
+      <button type="submit" class="btn btn-dark" style="width:100%; margin-top:22px;">Se connecter</button>
+      <p style="font-size:0.78rem; color:#8a8a80; margin-top:14px;">Mot de passe oublié ? Demandez à l'administrateur de le réinitialiser.</p>
+    </form>`;
+  } else if(tab === 'signup'){
+    body = `<div class="charte-box" id="gateCharte" style="max-height:150px; overflow:auto;">${DEFAULTS.charte.split('\n\n').map(p=>`<p>${esc(p)}</p>`).join('')}</div>
+    <div class="check-row"><input type="checkbox" id="charteAck"><label for="charteAck">J'ai lu et j'accepte la charte du dahira ci-dessus.</label></div>
+    <form onsubmit="return gateSignup(event)">
+      <label>Nom</label><input type="text" id="f_nom" required>
+      <label>Prénom</label><input type="text" id="f_prenom" required>
+      <label>E-mail (sert d'identifiant de connexion)</label><input type="email" id="f_email" autocomplete="username" required>
+      <label>Numéro de téléphone</label><input type="tel" id="f_tel" required placeholder="+221 77 000 00 00">
+      <label>Adresse</label><input type="text" id="f_adresse" placeholder="Ex : Grand Yoff, Dakar" required>
+      <label>Photo (optionnel — pour la carte de membre)</label><input type="file" id="f_photo" accept="image/*">
+      ${pw}
+      <button type="submit" class="btn btn-dark" style="width:100%; margin-top:22px;">Créer mon compte</button>
+    </form>`;
+  } else if(tab === 'claim'){
+    body = `<p style="font-size:0.84rem; color:#5a5a52; line-height:1.55;">Vous étiez déjà inscrit avant l'ouverture des comptes ? Retrouvez votre fiche avec votre numéro de membre (ex : KKHA-0012) et le téléphone donné à l'inscription, puis choisissez vos identifiants.</p>
+    <form onsubmit="return gateClaim(event)">
+      <label>Numéro de membre</label><input type="text" id="c_mat" placeholder="KKHA-0012" required>
+      <label>Téléphone enregistré</label><input type="tel" id="c_tel" required>
+      <label>E-mail (identifiant de connexion)</label><input type="email" id="f_email" autocomplete="username" required>
+      ${pw}
+      <button type="submit" class="btn btn-dark" style="width:100%; margin-top:22px;">Activer mon compte</button>
+    </form>`;
+  } else {
+    body = `<form onsubmit="return gateAdminLogin(event)">
+      <label style="margin-top:0;">Mot de passe administrateur</label><input type="password" id="g_admin" required>
+      <button type="submit" class="btn btn-dark" style="width:100%; margin-top:22px;">Accéder à l'espace administrateur</button>
+    </form>`;
+  }
+  g.style.cssText = 'position:fixed; inset:0; z-index:9999; overflow:auto; background:var(--ivory,#FDF8EA); padding:28px 16px;';
+  g.innerHTML = `<div style="max-width:480px; margin:0 auto;">
+    <div style="text-align:center; margin-bottom:18px;">
+      <img src="${logo}" alt="" style="width:64px; height:64px; border-radius:50%; border:2px solid var(--gold); object-fit:cover;">
+      <h2 style="color:var(--green-deep); margin-top:10px; font-size:1.25rem;">Dahira Khidmatul Khayril Hallamina Ahmada</h2>
+      <p class="sub" style="margin:4px 0 0;">Espace réservé aux membres</p>
+    </div>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin-bottom:14px;">
+      ${tabBtn('login','Se connecter')}${tabBtn('signup','Créer un compte')}${tabBtn('claim','Déjà inscrit ?')}
+    </div>
+    <div class="card">${body}<div class="form-msg" id="gateMsg"></div></div>
+    <p style="text-align:center; margin-top:16px;"><button type="button" class="small-btn" onclick="showGate('${tab==='admin'?'login':'admin'}')">${tab==='admin'?'← Retour':'Accès administrateur'}</button></p>
+  </div>`;
+  if(tab === 'signup'){
+    sget('charte').then(c=>{
+      const box = document.getElementById('gateCharte');
+      if(c && box) box.innerHTML = String(c).split('\n\n').map(p=>`<p>${esc(p)}</p>`).join('');
+    });
+  }
+}
+function hideGate(){
+  const g = document.getElementById('gate'); if(g) g.remove();
+  document.body.style.overflow = '';
+}
+async function enterApp(token){
+  AUTH.token = token; storeToken(token);
+  try{ ME = await rpc('member_me', { p_token: token }); }catch(e){ ME = null; }
+  hideGate();
+  await startApp();
+}
+function passwordsOk(){
+  const a = document.getElementById('g_pass').value, b = document.getElementById('g_pass2').value;
+  if(a.length < 6){ gateMsg('Mot de passe trop court (6 caractères minimum).', false); return null; }
+  if(a !== b){ gateMsg('Les deux mots de passe ne sont pas identiques.', false); return null; }
+  return a;
+}
+async function gateLogin(e){
+  e.preventDefault();
+  gateMsg('Connexion…', true);
+  try{
+    const tok = await rpc('member_login', { p_email: document.getElementById('g_email').value, p_password: document.getElementById('g_pass').value });
+    if(!tok){ gateMsg('E-mail ou mot de passe incorrect.', false); return false; }
+    await enterApp(tok);
+  }catch(err){ gateMsg(gateError(err), false); }
+  return false;
+}
+async function gateClaim(e){
+  e.preventDefault();
+  const pass = passwordsOk(); if(pass === null) return false;
+  gateMsg('Activation…', true);
+  try{
+    const tok = await rpc('member_claim', {
+      p_matricule: document.getElementById('c_mat').value, p_tel: document.getElementById('c_tel').value,
+      p_email: document.getElementById('f_email').value, p_password: pass });
+    await enterApp(tok);
+  }catch(err){ gateMsg(gateError(err), false); }
+  return false;
+}
+async function gateAdminLogin(e){
+  e.preventDefault();
+  const val = document.getElementById('g_admin').value;
+  gateMsg('Vérification…', true);
+  try{
+    if(!(await rpc('admin_login', { p_pass: val }))){ gateMsg('Mot de passe incorrect.', false); return false; }
+  }catch(err){ gateMsg(gateError(err), false); return false; }
+  AUTH.admin = val;
+  hideGate();
+  const ok = await startApp();
+  if(!ok){ AUTH.admin = null; alert("Les données du serveur n'ont pas pu être chargées en entier. Réessayez."); location.reload(); return false; }
+  isAdmin = true;
+  document.getElementById('adminPill').classList.add('active');
+  document.getElementById('adminPill').textContent = 'Admin ✓';
+  dgoto('admin');
+  return false;
+}
+async function gateSignup(e){
+  e.preventDefault();
+  if(!document.getElementById('charteAck').checked){ gateMsg('Veuillez cocher la case pour confirmer que vous avez lu la charte.', false); return false; }
+  const pass = passwordsOk(); if(pass === null) return false;
+  const photoFile = document.getElementById('f_photo').files[0];
+  if(photoFile && !photoFile.type.startsWith('image/')){ gateMsg('La photo doit être un fichier image.', false); return false; }
+  const member = {
+    nom: document.getElementById('f_nom').value.trim(),
+    prenom: document.getElementById('f_prenom').value.trim(),
+    email: document.getElementById('f_email').value.trim(),
+    tel: document.getElementById('f_tel').value.trim(),
+    adresse: document.getElementById('f_adresse').value.trim()
+  };
+  const btn = e.target.querySelector('button[type="submit"]'); const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Création du compte…';
+  let res;
+  try{
+    const photo = photoFile ? await resizeImageToDataURL(photoFile) : null;
+    res = await rpc('register_member', { p_member: member, p_photo: photo, p_password: pass });
+  }catch(err){
+    btn.disabled = false; btn.textContent = label;
+    gateMsg(gateError(err), false);
+    return false;
+  }
+  member.matricule = res.matricule;
+  justRegistered = member;
+  notify({type:'welcome', to: member.email, prenom: member.prenom, nom: member.nom, matricule: member.matricule});
+  await enterApp(res.token);
+  dgoto('inscription');
+  return false;
+}
+async function logoutMember(){
+  const t = AUTH.token;
+  try{ if(t) await rpc('member_logout', { p_token: t }); }catch(e){}
+  storeToken(null);
+  location.hash = '';
+  location.reload();
+}
 
 /* ============ LIEN PROFOND (QR code des cartes administrateur) ============ */
 // Format : #admin&pass=XXXX  ou  #espace-commission&idx=N&code=XXXX
@@ -832,10 +1041,9 @@ function renderHome(){
       <p class="lead">Un espace de service (Khidma), de savoir et de fraternité au service de la voie de Serigne Touba Cheikh Ahmadou Bamba.</p>
       <p style="font-family:var(--serif); font-style:italic; font-size:1rem; color:var(--gold-soft); letter-spacing:0.03em; margin:-14px auto 30px; max-width:520px; opacity:0.95;">« And Ligueyal Serigne Bi Thi Nimou Gueneu Selei »</p>
       <div class="hero-cta">
-        <button class="btn btn-gold" onclick="dgoto('inscription')">${ic('plus')} Devenir membre</button>
+        <button class="btn btn-gold" onclick="dgoto('inscription')">${ic('plus')} Mon adhésion</button>
         <button class="btn btn-outline" onclick="dgoto('histoire')">${ic('book')} Découvrir le mouridisme</button>
       </div>
-      <button type="button" onclick="dgoto('inscription'); setTimeout(skipToAdhesion, 350);" style="margin-top:18px; background:none; border:none; color:var(--gold-soft); font-size:0.82rem; text-decoration:underline; text-underline-offset:3px; opacity:0.85;">Déjà membre ? Payer directement mon adhésion</button>
     </div>
   </section>
   <div class="stats">
@@ -851,7 +1059,7 @@ function renderHome(){
       ${quickCard('book','Histoire du mouridisme',"Du Cheikh Ahmadou Bamba aux Khalifs Généraux d'aujourd'hui.",'histoire')}
       ${quickCard('clock','Heures de prière','Consultez les horaires actualisés des cinq prières.','prieres')}
       ${quickCard('pen','Khassidas','Parcourez les khassidas du Cheikh et leurs thèmes.','khassidas')}
-      ${quickCard('plus','Devenir membre',"Inscrivez-vous puis réglez votre adhésion de 1150 FCFA, en une seule étape.",'inscription')}
+      ${quickCard('plus','Mon adhésion',"Réglez votre adhésion de 1150 FCFA via Wave ou Orange Money.",'inscription')}
       ${quickCard('heart','Barkelou','Participez financièrement au développement du dahira.','barkelou')}
       ${quickCard('grid','Commissions','Découvrez le bureau et ses cinq commissions.','commissions')}
       ${quickCard('music','Sons du Kourel','Écoutez les enregistrements du kourel du dahira.','kourel')}
@@ -927,7 +1135,7 @@ function renderCharte(){
     <p class="sub">À lire attentivement avant toute adhésion au Dahira Khidmatul Khayril Hallamina Ahmada.</p>
     <div class="charte-box">${STATE.charte.split('\\n\\n').map(p=>`<p>${p}</p>`).join('')}</div>
     <div style="margin-top:20px;">
-      <button class="btn btn-dark" onclick="dgoto('inscription')">Passer à l'inscription</button>
+      <button class="btn btn-dark" onclick="dgoto('inscription')">Régler mon adhésion</button>
     </div>
   </section>`;
 }
@@ -1045,97 +1253,26 @@ async function renderAgenda(){
   </section>`;
 }
 
-/* ============ INSCRIPTION ============ */
-let charteRead = false;
+/* ============ MON ADHÉSION (membres connectés) ============ */
+let justRegistered = null;
 function renderInscription(){
   const v = document.getElementById('currentView');
+  const welcome = justRegistered
+    ? `<div class="form-msg ok" style="display:block; margin-top:0;">Bienvenue ${esc(justRegistered.prenom)} ! Votre compte a été créé. Votre numéro de membre : <b>${esc(justRegistered.matricule)}</b>.</div>`
+    : '';
+  const who = ME ? `${esc(ME.prenom)} ${esc(ME.nom)} · ${esc(ME.matricule)}` : '';
   v.innerHTML = `
   <section class="section" style="max-width:600px;">
-    <div class="kicker">Rejoindre le dahira</div>
-    <h2>Devenir membre & régler son adhésion</h2>
-    <p class="sub">Lisez la charte, inscrivez-vous, puis réglez vos 1150 FCFA d'adhésion — le tout en une seule étape.</p>
-    <div class="step-indicator" id="stepIndicator">
-      <div class="step-dot active" id="stepDot1"><span>1</span> Inscription</div>
-      <div class="step-line"></div>
-      <div class="step-dot" id="stepDot2"><span>2</span> Adhésion</div>
-    </div>
-    <div style="margin-bottom:18px;">
-      <button type="button" class="small-btn" onclick="skipToAdhesion()">Déjà membre ? Payer directement mon adhésion ${ic('arrow',12)}</button>
-    </div>
+    <div class="kicker">Mon adhésion</div>
+    <h2>Régler mon adhésion</h2>
+    <p class="sub">${who}</p>
     <div class="card" id="inscriptionCard">
-      <div class="charte-box" id="charteMini">${STATE.charte.split('\\n\\n').map(p=>`<p>${p}</p>`).join('')}</div>
-      <div class="check-row">
-        <input type="checkbox" id="charteAck">
-        <label for="charteAck" id="charteAckLabel">J'ai lu et j'accepte la charte du dahira ci-dessus.</label>
-      </div>
-      <form id="inscriptionForm" onsubmit="return submitInscription(event)">
-        <label>Nom</label>
-        <input type="text" id="f_nom" required>
-        <label>Prénom</label>
-        <input type="text" id="f_prenom" required>
-        <label>E-mail</label>
-        <input type="email" id="f_email" required>
-        <label>Numéro de téléphone</label>
-        <input type="tel" id="f_tel" required placeholder="+221 77 000 00 00">
-        <label>Adresse</label>
-        <input type="text" id="f_adresse" placeholder="Ex : Grand Yoff, Dakar" required>
-        <label>Photo (optionnel — pour la carte de membre, 2 Mo max)</label>
-        <input type="file" id="f_photo" accept="image/*">
-        <div style="margin-top:22px;">
-          <button type="submit" class="btn btn-dark" style="width:100%;">S'inscrire et continuer vers l'adhésion</button>
-        </div>
-      </form>
-      <div class="form-msg" id="inscMsg"></div>
+      ${welcome}
+      <p style="font-size:0.9rem; color:#5a5a52; margin:${welcome?'16px':'0'} 0 4px; line-height:1.6;">Réglez vos 1150 FCFA d'adhésion via Wave ou Orange Money.</p>
+      ${paymentCards(STATE.payments.adhesion_wave, STATE.payments.adhesion_om, "1150 FCFA")}
     </div>
   </section>`;
-  charteRead = false;
-}
-function skipToAdhesion(){
-  showAdhesionStep(null);
-  document.getElementById('inscriptionCard').scrollIntoView({behavior:'smooth', block:'start'});
-}
-async function submitInscription(e){
-  e.preventDefault();
-  const msg = document.getElementById('inscMsg');
-  if(!document.getElementById('charteAck').checked){
-    msg.className = 'form-msg err'; msg.textContent = "Veuillez cocher la case ci-dessus pour confirmer que vous avez lu la charte.";
-    msg.scrollIntoView({behavior:'smooth', block:'center'});
-    return false;
-  }
-  const photoFile = document.getElementById('f_photo').files[0];
-  if(photoFile && photoFile.size > MAX_FILE_BYTES/2){
-    msg.className = 'form-msg err'; msg.textContent = `Photo trop volumineuse (${(photoFile.size/1024/1024).toFixed(1)} Mo). Limite : 2 Mo.`;
-    return false;
-  }
-  const member = {
-    nom: document.getElementById('f_nom').value.trim(),
-    prenom: document.getElementById('f_prenom').value.trim(),
-    email: document.getElementById('f_email').value.trim(),
-    tel: document.getElementById('f_tel').value.trim(),
-    adresse: document.getElementById('f_adresse').value.trim(),
-    dateInscription: new Date().toISOString(),
-    adhesionPayee: false,
-    hasPhoto: !!photoFile
-  };
-  const btn = e.target.querySelector('button[type="submit"]');
-  const label = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Envoi en cours…';
-  try{
-    const photo = photoFile ? await readFileAsDataURL(photoFile) : null;
-    member.matricule = await rpc('register_member', {
-      p_member: { nom: member.nom, prenom: member.prenom, email: member.email, tel: member.tel, adresse: member.adresse },
-      p_photo: photo
-    });
-  }catch(err){
-    btn.disabled = false; btn.textContent = label;
-    msg.className = 'form-msg err';
-    msg.textContent = "L'inscription n'a pas pu être enregistrée (connexion ou serveur). Merci de réessayer dans un instant.";
-    return false;
-  }
-  STATE.memberCount = (STATE.memberCount || 0) + 1;
-  notify({type:'welcome', to: member.email, prenom: member.prenom, nom: member.nom, matricule: member.matricule});
-  showAdhesionStep(member);
-  return false;
+  justRegistered = null;
 }
 /* ---- E-mail de bienvenue (service EmailJS, appelé depuis le navigateur) ----
    À renseigner une seule fois (voir README) ; tant que c'est vide, aucun e-mail n'est envoyé. */
@@ -1161,20 +1298,6 @@ async function notify(payload){
       })
     });
   }catch(e){ console.warn('e-mail de bienvenue non envoyé', e); } // ne bloque jamais l'inscription
-}
-function showAdhesionStep(member){
-  document.getElementById('stepDot1').classList.remove('active');
-  document.getElementById('stepDot1').classList.add('done');
-  document.getElementById('stepDot2').classList.add('active');
-  const card = document.getElementById('inscriptionCard');
-  const welcome = member
-    ? `<div class="form-msg ok" style="display:block; margin-top:0;">Bienvenue ${member.prenom} ! Votre inscription a été enregistrée.</div>`
-    : '';
-  card.innerHTML = `
-    ${welcome}
-    <p style="font-size:0.9rem; color:#5a5a52; margin:${member?'16px':'0'} 0 4px; line-height:1.6;">Réglez vos 1150 FCFA d'adhésion via Wave ou Orange Money.</p>
-    ${paymentCards(STATE.payments.adhesion_wave, STATE.payments.adhesion_om, "1150 FCFA")}
-  `;
 }
 
 /* ============ COMMISSIONS ============ */
@@ -1689,7 +1812,7 @@ function renderAnnonces(){
 }
 
 
-/* ============ ADHESION (fusionnée avec l'inscription — voir showAdhesionStep) ============ */
+/* ============ ADHESION (voir renderInscription) ============ */
 function renderBarkelou(){
   const v = document.getElementById('currentView');
   v.innerHTML = `
@@ -2069,6 +2192,8 @@ function renderAdmin(){
           </div>
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <span class="pill-status ${m.adhesionPayee?'paid':'pending'}">${m.adhesionPayee?'Adhésion payée':'En attente'}</span>
+            <span class="pill-status ${m.uid?'paid':'pending'}" title="${m.uid?'Ce membre a créé son compte':'Ce membre n\'a pas encore de compte'}">${m.uid?'Compte actif':'Sans compte'}</span>
+            ${m.uid ? `<button class="small-btn" onclick="resetMemberPassword(${i})">Réinit. mot de passe</button>` : ''}
             <button class="small-btn" onclick="toggleMemberPaid(${i})">Basculer</button>
             <select class="admin-role-select" onchange="setMemberAdminRole(${i}, this.value)" style="font-size:0.75rem; padding:6px 8px; border-radius:6px; border:1px solid var(--line-strong); width:auto;">
               <option value="">Membre simple</option>
@@ -2389,6 +2514,7 @@ async function tryAdminLogin(){
   renderAdmin();
 }
 function logoutAdmin(){
+  if(!AUTH.token){ AUTH.admin = null; location.hash = ''; location.reload(); return; }
   isAdmin = false;
   AUTH.admin = null;
   document.getElementById('adminPill').classList.remove('active');
@@ -2405,21 +2531,22 @@ async function deleteMember(i){
   const target = STATE.members[i];
   if(!target) return;
   const nomComplet = `${target.prenom} ${target.nom}`.trim();
-  if(!confirm(`Supprimer définitivement ${nomComplet} (${getMatricule(target,i)}) ?\n\nSa fiche et sa photo seront effacées. Cette action est irréversible.`)) return;
-  // On relit la liste à jour (d'autres personnes ont pu s'inscrire entre-temps)
-  // et on fige les matricules avant de retirer quelqu'un : sans cela, les matricules
-  // « calculés » d'après la position changeraient pour les membres suivants.
+  if(!confirm(`Supprimer DÉFINITIVEMENT ${nomComplet} (${getMatricule(target,i)}) ?\n\n• sa fiche, sa photo et son compte sont effacés sans retour possible ;\n• les matricules des membres suivants sont renumérotés (chacun avance d'un rang) : les cartes déjà imprimées de ces membres devront être réimprimées.`)) return;
+  let ok = false;
+  try{ ok = await rpc('admin_delete_member', { p_admin: AUTH.admin, p_matricule: getMatricule(target, i) }); }
+  catch(e){ ok = false; }
+  if(ok !== true){ alert("La suppression a échoué (connexion, droits, ou membre déjà supprimé). Rien n'a été modifié."); return; }
   const fresh = await sget('members');
-  if(!Array.isArray(fresh)){ alert("Impossible de lire la liste des membres. Réessayez dans un instant."); return; }
-  const frozen = fresh.map((x,idx)=> x.matricule ? x : {...x, matricule:getMatricule(x,idx)});
-  const mat = getMatricule(target, i);
-  const updated = frozen.filter(x => x.matricule !== mat);
-  if(updated.length === frozen.length){ alert("Ce membre n'existe plus dans la liste."); STATE.members = frozen; renderAdmin(); return; }
-  const ok = await sset('members', updated);
-  if(!ok){ alert("La suppression a échoué (connexion ou droits). Rien n'a été modifié."); return; }
-  if(target.hasPhoto) await sdelete('memberPhoto_' + mat);
-  STATE.members = updated;
+  if(Array.isArray(fresh)) STATE.members = fresh;
   renderAdmin();
+}
+async function resetMemberPassword(i){
+  const m = STATE.members[i]; if(!m) return;
+  if(!confirm(`Générer un nouveau mot de passe temporaire pour ${m.prenom} ${m.nom} ?\nSes connexions actuelles seront fermées.`)) return;
+  let tmp = null;
+  try{ tmp = await rpc('admin_reset_member_password', { p_admin: AUTH.admin, p_matricule: getMatricule(m, i) }); }catch(e){}
+  if(!tmp){ alert('La réinitialisation a échoué.'); return; }
+  prompt(`Mot de passe temporaire de ${m.prenom} ${m.nom} (à lui transmettre, il ne sera plus affiché) :`, tmp);
 }
 async function updateMemberField(i, field, value){
   STATE.members[i][field] = value.trim();
