@@ -7,12 +7,26 @@ Site du dahira : `index.html` (publié avec GitHub Pages) + base de données Sup
   (déjà appliqués sur le projet). Le mot de passe administrateur n'est pas dans ce dépôt :
   il est stocké chiffré dans la base et se change depuis l'espace administrateur.
 
-## Suppression de membres
+## Comptes membres (accès réservé)
 
-Dans l'espace administrateur, chaque membre a un bouton **Supprimer** (avec confirmation) qui
-efface sa fiche et sa photo. Après une suppression, les nouveaux matricules continuent après le
-plus grand numéro existant : **ré-exécuter la fonction `register_member` de `supabase/schema.sql`**
-dans Supabase (SQL Editor) pour activer ce comportement.
+Pour entrer sur la plateforme, il faut un compte : **e-mail + mot de passe**, créé à l'inscription.
+Le contrôle est fait côté serveur (sans connexion, la base ne renvoie aucun contenu ; seule la charte
+reste lisible pour pouvoir s'inscrire). Les mots de passe sont stockés hachés (bcrypt).
+
+- **Mise en ligne : d'abord `supabase/schema.sql` (SQL Editor de Supabase, ré-exécutable), ensuite `index.html`.**
+  Dans l'autre ordre, la connexion et l'inscription échouent.
+- Membres déjà inscrits avant les comptes : onglet **« Déjà inscrit ? »** (numéro de membre + téléphone
+  d'origine, puis choix de l'e-mail et du mot de passe).
+- Mot de passe oublié : l'administrateur clique **Réinit. mot de passe** sur la ligne du membre et lui
+  transmet le mot de passe temporaire affiché.
+- L'espace administrateur reste accessible par le lien « Accès administrateur » de la page de connexion
+  (ou par le QR code des cartes administrateur).
+
+## Suppression de membres (définitive)
+
+Bouton **Supprimer** (avec confirmation) : efface la fiche, la photo, le compte et les sessions du membre,
+puis **renumérote les matricules** restants sans trou (KKHA-0001, KKHA-0002…). Les cartes déjà imprimées
+des membres qui suivaient le membre supprimé portent donc un ancien matricule et sont à réimprimer.
 
 ## E-mail de bienvenue (EmailJS)
 
