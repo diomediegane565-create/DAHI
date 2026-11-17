@@ -25,3 +25,9 @@ dans Supabase (SQL Editor) pour activer ce comportement.
 4. Dans EmailJS > Security, limiter les domaines autorisés à celui du site.
 
 Tant que `EMAILJS` est vide, aucun e-mail n'est envoyé. Un échec d'envoi ne bloque jamais l'inscription.
+
+## Modifier une carte de membre
+
+Espace administrateur > bouton **Carte / modifier** sur un membre : on peut corriger prénom, nom,
+téléphone, adresse, commission, fonction, mission, et ajouter / remplacer / retirer la photo
+(réduite automatiquement à 600 px). Aucun changement de base de données n'est nécessaire.

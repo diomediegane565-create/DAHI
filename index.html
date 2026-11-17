@@ -1820,9 +1820,114 @@ async function renderCartesMembres(){
         </div>
       </div>
       <p class="sub no-print">Format carte (85,6 × 54 mm), prête à découper après impression. Choisissez « Enregistrer au format PDF » pour obtenir un fichier.</p>
+      ${single && isAdmin ? cardEditorHtml(single) : ''}
       <div class="id-card-wrap">${cardsHtml.join('') || '<p style="color:#8a8a80;">Aucun membre à afficher.</p>'}</div>
     </section>`;
   renderCardQrs();
+}
+/* ---- Modification d'une carte (administrateur) ---- */
+function cardEditorHtml(m){
+  const i = cardsSingleIndex;
+  return `
+  <div class="card no-print" style="margin:14px 0 20px;">
+    <h3 style="color:var(--green-deep); font-size:1rem; margin-bottom:10px;">Modifier la carte</h3>
+    <div class="grid-2">
+      <div><label style="margin-top:0;">Prénom</label><input id="ce_prenom" value="${esc(m.prenom)}"></div>
+      <div><label style="margin-top:0;">Nom</label><input id="ce_nom" value="${esc(m.nom)}"></div>
+      <div><label>Téléphone</label><input id="ce_tel" value="${esc(m.tel)}"></div>
+      <div><label>Adresse</label><input id="ce_adresse" value="${esc(m.adresse||'')}"></div>
+      <div><label>Commission</label>
+        <select id="ce_commission">
+          <option value="">Aucune</option>
+          ${STATE.commissions.map((c,ci)=>`<option value="${ci}" ${String(m.commission)===String(ci)?'selected':''}>${esc(c.name.replace(/^Commission\s+/i,''))}</option>`).join('')}
+        </select></div>
+      <div><label>Fonction</label><input id="ce_fonction" value="${esc(m.fonction||'')}" placeholder="Ex : Responsable"></div>
+      <div style="grid-column:1/-1;"><label>Mission</label><input id="ce_mission" value="${esc(m.mission||'')}"></div>
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
+      <button class="btn btn-dark" id="ce_save" onclick="saveCardEdits()">Enregistrer les modifications</button>
+    </div>
+    <label style="margin-top:18px;">Photo de la carte</label>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+      <input type="file" id="ce_photo" accept="image/*" onchange="changeCardPhoto(this)" style="flex:1; min-width:200px;">
+      ${m.hasPhoto ? `<button class="small-btn danger" onclick="removeCardPhoto()">Retirer la photo</button>` : ''}
+    </div>
+    <div class="form-msg" id="ce_msg"></div>
+  </div>`;
+}
+function ceMsg(text, ok){
+  const el = document.getElementById('ce_msg'); if(!el) return;
+  el.className = 'form-msg ' + (ok ? 'ok' : 'err'); el.textContent = text; el.style.display = 'block';
+}
+// Applique une modification à un membre en relisant d'abord la liste à jour (évite d'écraser des inscriptions récentes).
+async function mutateMember(i, fn){
+  const target = STATE.members[i]; if(!target) return false;
+  const mat = getMatricule(target, i);
+  const fresh = await sget('members');
+  if(!Array.isArray(fresh)) return false;
+  const frozen = fresh.map((x,idx)=> x.matricule ? x : {...x, matricule:getMatricule(x,idx)});
+  const k = frozen.findIndex(x => x.matricule === mat);
+  if(k < 0) return false;
+  fn(frozen[k]);
+  if(!(await sset('members', frozen))) return false;
+  STATE.members = frozen;
+  return true;
+}
+async function saveCardEdits(){
+  const i = cardsSingleIndex; if(i === null) return;
+  const v = id => document.getElementById(id).value.trim();
+  if(!v('ce_prenom') || !v('ce_nom')){ ceMsg('Le prénom et le nom sont obligatoires.', false); return; }
+  const btn = document.getElementById('ce_save'); btn.disabled = true;
+  const ok = await mutateMember(i, m => {
+    m.prenom = v('ce_prenom'); m.nom = v('ce_nom'); m.tel = v('ce_tel'); m.adresse = v('ce_adresse');
+    m.commission = v('ce_commission'); m.fonction = v('ce_fonction'); m.mission = v('ce_mission');
+  });
+  btn.disabled = false;
+  if(!ok){ ceMsg("L'enregistrement a échoué (connexion ou droits). Rien n'a été modifié.", false); return; }
+  await renderCartesMembres();
+  ceMsg('Carte mise à jour.', true);
+}
+// Réduit la photo (max 600 px, JPEG) pour qu'elle reste légère quel que soit le fichier d'origine.
+function resizeImageToDataURL(file, maxSide = 600, quality = 0.85){
+  return new Promise((resolve, reject)=>{
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const r = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * r); c.height = Math.round(img.height * r);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image illisible')); };
+    img.src = url;
+  });
+}
+async function changeCardPhoto(input){
+  const file = input.files[0]; if(!file) return;
+  const i = cardsSingleIndex; if(i === null) return;
+  if(!file.type.startsWith('image/')){ ceMsg('Veuillez choisir un fichier image.', false); return; }
+  ceMsg('Enregistrement de la photo…', true);
+  try{
+    const data = await resizeImageToDataURL(file);
+    const mat = getMatricule(STATE.members[i], i);
+    if(!(await sset('memberPhoto_' + mat, data))) throw new Error('écriture photo');
+    if(!(await mutateMember(i, m => { m.hasPhoto = true; }))) throw new Error('écriture fiche');
+  }catch(e){
+    ceMsg("La photo n'a pas pu être enregistrée. Réessayez avec une autre image.", false); return;
+  }
+  await renderCartesMembres();
+  ceMsg('Photo mise à jour.', true);
+}
+async function removeCardPhoto(){
+  const i = cardsSingleIndex; if(i === null) return;
+  if(!confirm('Retirer la photo de cette carte ?')) return;
+  const mat = getMatricule(STATE.members[i], i);
+  if(!(await mutateMember(i, m => { m.hasPhoto = false; }))){ ceMsg('Échec : rien n\'a été modifié.', false); return; }
+  await sdelete('memberPhoto_' + mat);
+  await renderCartesMembres();
+  ceMsg('Photo retirée.', true);
 }
 function esc(s){
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1970,7 +2075,7 @@ function renderAdmin(){
               <option value="general" ${m.isAdmin && m.adminScope==='general' ? 'selected':''}>Admin général</option>
               ${STATE.commissions.map((c,ci)=>`<option value="${ci}" ${m.isAdmin && m.adminScope==String(ci) ? 'selected':''}>Admin — ${c.name}</option>`).join('')}
             </select>
-            <button class="small-btn" onclick="printSingleCard(${i})">${ic('arrow',13)} Carte</button>
+            <button class="small-btn" onclick="printSingleCard(${i})">${ic('arrow',13)} Carte / modifier</button>
             <button class="small-btn danger" onclick="deleteMember(${i})">Supprimer</button>
           </div>
           <div style="flex-basis:100%; display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
